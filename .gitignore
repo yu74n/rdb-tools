@@ -1,0 +1,5 @@
+/target
+**/*.rs.bk
+dump.rdb
+.vscode
+*.code-workspace
