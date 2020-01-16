@@ -12,6 +12,11 @@ error_chain! {
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum EncodingType {
+    Simple, AdditionalByte, Stream, Special
+}
+
 fn dump(file: &str) -> std::io::Result<()> {
     let f = File::open(file)?;
     let mut count = 0;
@@ -58,22 +63,59 @@ fn parse_aux(mut f: std::fs::File) -> std::fs::File {
     f = read(f, &mut value);
     println!("key={} value={}", key, value);
     f
-    // let key_size = unsafe { std::mem::transmute::<u8, usize>(size[0]) };
-    // let mut key_size = size[0].try_into().unwrap();
-    // let mut v = vec![0u8; key_size];
-    // let mut a = v.as_mut_slice();
-    // // let mut a: &[u8] = &v;
-    // f.read_exact(&mut a);
 }
 
 fn read(mut f: std::fs::File, result: &mut String) -> std::fs::File {
     let mut size_raw = [0u8; 1];
     f.read_exact(&mut size_raw).unwrap();
-    let size = size_raw[0] as usize;
-    let mut key = vec![0u8; size];
-    f.read_exact(&mut key).unwrap();
-    *result = String::from_utf8(key).unwrap();
+    *result = match decide_encoding_type(size_raw[0]).unwrap() {
+        EncodingType::Simple => {
+            let size = size_raw[0] as usize;
+            let mut key = vec![0u8; size];
+            f.read_exact(&mut key).unwrap();
+            String::from_utf8(key).unwrap()
+        },
+        EncodingType::Stream => unsafe {
+            let mut stream_size = [0u8; 4];
+            f.read_exact(&mut stream_size).unwrap();
+            std::mem::transmute::<[u8; 4], i32>(stream_size).to_string()
+        },
+        EncodingType::Special => unsafe {
+            match size_raw[0] & 0x3F {
+                0 => {
+                    let mut b = [0u8; 1];
+                    f.read_exact(&mut b).unwrap();
+                    b[0].to_string()
+                },
+                1 => {
+                    let mut b = [0u8; 2];
+                    f.read_exact(&mut b).unwrap();
+                    std::mem::transmute::<[u8; 2], i16>(b).to_string()
+                },
+                2 => {
+                    let mut b = [0u8; 4];
+                    f.read_exact(&mut b).unwrap();
+                    std::mem::transmute::<[u8; 4], i32>(b).to_string()
+                }
+                3 => {
+                    panic!("It's Compressed String, but not implemented yet")
+                }
+                _ => panic!("Invalid encoding")
+            }
+        }
+        _ => panic!("Not implemented")
+    };
     f
+}
+
+fn decide_encoding_type(b: u8) -> std::result::Result<EncodingType, &'static str> {
+    match b >> 6 {
+        0 => Ok(EncodingType::Simple),
+        1 => Ok(EncodingType::AdditionalByte),
+        2 => Ok(EncodingType::Stream),
+        3 => Ok(EncodingType::Special),
+        _ => Err("Invalid encoding")
+    }
 }
 
 fn verify(magic: &str) -> std::result::Result<(), &'static str> {
