@@ -3,8 +3,9 @@ extern crate error_chain;
 extern crate clap;
 
 use clap::{App, Arg, SubCommand};
-use std::fs::File;
-use std::io::Read;
+use std::{fs::File, usize};
+use std::io::{Read, BufReader};
+use byteorder::{LittleEndian,ReadBytesExt};
 
 error_chain! {
     foreign_links {
@@ -15,6 +16,10 @@ error_chain! {
 #[derive(Debug, PartialEq)]
 enum EncodingType {
     Simple, AdditionalByte, Stream, Special
+}
+
+pub struct Parser<R: Read> {
+    input: R
 }
 
 fn dump(file: &str) -> std::io::Result<()> {
@@ -33,79 +38,147 @@ fn dump(file: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-fn parse(file: &str) -> std::result::Result<(), std::io::Error> {
-    let mut f = File::open(file)?;
+fn dump_buf(buf: &Vec<u8>) {
+    let mut count = 0;
+    for byte in buf {
+        print!("{:02x}", byte);
+        count += 1;
+        if count % 16 == 0 {
+            print!("\n");
+        } else {
+            print!(" ");
+        }
+    }
+    print!("\n");
+}
+
+impl<R: Read> Parser<R>{
+    pub fn new(input: R) -> Parser<R> {
+        Parser{
+            input: input
+        }
+    }
+
+    pub fn parse(&mut self) -> std::result::Result<(), std::io::Error> {
+        verify_magic(&mut self.input).unwrap();
+        verify_version(&mut self.input);
+        loop {
+            let opcode = self.input.read_u8()?;
+            match opcode {
+                0xFA => {
+                    let key = read_string(&mut self.input);
+                    let value = read_string(&mut self.input);
+                    println!("{}:{}", key, value);
+                },
+                0xFE => {
+                    parse_db(&mut self.input);
+                },
+                0xFF => break,
+                _ => print!("{:02x}", opcode)
+            };
+        }
+        
+        Ok(())
+    }
+}
+
+fn verify_magic(reader: &mut dyn Read) -> std::result::Result<(), &'static str> {
     let mut magic_raw = [0u8; 5];
-    let mut version_raw = [0u8; 4];
-    f.read_exact(&mut magic_raw)?;
+    reader.read_exact(&mut magic_raw).unwrap();
     let magic = std::str::from_utf8(&magic_raw).unwrap();
-    verify(&magic).unwrap();
-    f.read_exact(&mut version_raw)?;
+    match magic {
+        "REDIS" => Ok(()),
+        _ => Err("It's not RDB file")
+    }
+}
+
+fn verify_version(reader: &mut dyn Read) {
+    let mut version_raw = [0u8; 4];
+    
+    reader.read_exact(&mut version_raw).unwrap();
     let version = std::str::from_utf8(&version_raw).unwrap().parse::<u32>().unwrap();
     println!("RDB version is {}", version);
-    loop {
-        let mut opcode = [0u8; 1];
-        f.read_exact(&mut opcode)?;
-        f = match opcode[0] {
-            0xFA => parse_aux(f),
-            _ => break
-        };
-    }
-    
-    Ok(())
 }
 
-fn parse_aux(mut f: std::fs::File) -> std::fs::File {
-    println!("AUX");
-    let mut key = String::new();
-    let mut value = String::new();
-    f = read(f, &mut key);
-    f = read(f, &mut value);
-    println!("key={} value={}", key, value);
-    f
-}
-
-fn read(mut f: std::fs::File, result: &mut String) -> std::fs::File {
-    let mut size_raw = [0u8; 1];
-    f.read_exact(&mut size_raw).unwrap();
-    *result = match decide_encoding_type(size_raw[0]).unwrap() {
+fn read_string(reader: &mut dyn Read) -> String {
+    let len_type = reader.read_u8().unwrap();
+    match decide_encoding_type(len_type).unwrap() {
         EncodingType::Simple => {
-            let size = size_raw[0] as usize;
-            let mut key = vec![0u8; size];
-            f.read_exact(&mut key).unwrap();
-            String::from_utf8(key).unwrap()
+            let mut buf = vec![0u8; len_type as usize];
+            reader.read_exact(&mut buf).unwrap();
+            String::from_utf8(buf).unwrap()
         },
-        EncodingType::Stream => unsafe {
-            let mut stream_size = [0u8; 4];
-            f.read_exact(&mut stream_size).unwrap();
-            std::mem::transmute::<[u8; 4], i32>(stream_size).to_string()
+        EncodingType::AdditionalByte => {
+            let upper = (len_type & 0x3F) as usize;
+            let lower = reader.read_u8().unwrap() as usize;
+            let len = (upper << 8) + lower;
+            let mut buf = vec![0u8; len];
+            reader.read_exact(&mut buf).unwrap();
+            String::from_utf8(buf).unwrap()
         },
-        EncodingType::Special => unsafe {
-            match size_raw[0] & 0x3F {
+        EncodingType::Stream => {
+            let len = reader.read_u32::<LittleEndian>().unwrap() as usize;
+            let mut buf = vec![0u8; len];
+            reader.read_exact(&mut buf).unwrap();
+            String::from_utf8(buf).unwrap()
+        },
+        EncodingType::Special => {
+            match len_type & 0x3F {
                 0 => {
-                    let mut b = [0u8; 1];
-                    f.read_exact(&mut b).unwrap();
-                    b[0].to_string()
+                    reader.read_u8().unwrap().to_string()
                 },
                 1 => {
-                    let mut b = [0u8; 2];
-                    f.read_exact(&mut b).unwrap();
-                    std::mem::transmute::<[u8; 2], i16>(b).to_string()
+                    reader.read_u16::<LittleEndian>().unwrap().to_string()
                 },
                 2 => {
-                    let mut b = [0u8; 4];
-                    f.read_exact(&mut b).unwrap();
-                    std::mem::transmute::<[u8; 4], i32>(b).to_string()
-                }
+                    reader.read_u32::<LittleEndian>().unwrap().to_string()
+                },
                 3 => {
                     panic!("It's Compressed String, but not implemented yet")
                 }
                 _ => panic!("Invalid encoding")
             }
         }
-        _ => panic!("Not implemented")
-    };
-    f
+    }
+}
+
+fn parse_db(reader: &mut dyn Read) {
+    let db_num = decode_length(reader);
+    println!("db: {}", db_num);
+}
+
+fn decode_length(reader: &mut dyn Read) -> usize {
+    let len_type = reader.read_u8().unwrap();
+    match decide_encoding_type(len_type).unwrap() {
+        EncodingType::Simple => {
+            len_type as usize
+        },
+        EncodingType::AdditionalByte => {
+            let upper = (len_type & 0x3F) as usize;
+            let lower = reader.read_u8().unwrap() as usize;
+            (upper << 8) + lower
+        },
+        EncodingType::Stream => {
+            reader.read_u32::<LittleEndian>().unwrap() as usize
+        },
+        EncodingType::Special => {
+            match len_type & 0x3F {
+                0 => {
+                    reader.read_u8().unwrap().to_string().parse::<u8>().unwrap() as usize
+                },
+                1 => {
+                    reader.read_u16::<LittleEndian>().unwrap().to_string().parse::<u16>().unwrap() as usize
+                },
+                2 => {
+                    reader.read_u32::<LittleEndian>().unwrap().to_string().parse::<u32>().unwrap() as usize
+                },
+                3 => {
+                    panic!("It's Compressed String, but not implemented yet")
+                }
+                _ => panic!("Invalid encoding")
+            }
+        }
+    }
 }
 
 fn decide_encoding_type(b: u8) -> std::result::Result<EncodingType, &'static str> {
@@ -115,13 +188,6 @@ fn decide_encoding_type(b: u8) -> std::result::Result<EncodingType, &'static str
         2 => Ok(EncodingType::Stream),
         3 => Ok(EncodingType::Special),
         _ => Err("Invalid encoding")
-    }
-}
-
-fn verify(magic: &str) -> std::result::Result<(), &'static str> {
-    match magic {
-        "REDIS" => Ok(()),
-        _ => Err("It's not RDB file")
     }
 }
 
@@ -162,7 +228,10 @@ fn main() {
 
     if let Some(matches) = matches.subcommand_matches("parse") {
         let file = matches.value_of("file").unwrap_or("dump.rdb");
-        match parse(file) {
+        let f = File::open(file).unwrap();
+        let reader = BufReader::new(f);
+        let mut parser = Parser::new(reader);
+        match parser.parse() {
             Ok(_) => println!("It's rdb file"),
             Err(err) => println!("error {}", err)
         }
