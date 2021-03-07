@@ -6,7 +6,7 @@ use clap::{App, Arg, SubCommand};
 use core::panic;
 use std::{fs::File, usize};
 use std::io::{Read, BufReader};
-use byteorder::{LittleEndian,ReadBytesExt};
+use byteorder::{LittleEndian,BigEndian,ReadBytesExt};
 
 error_chain! {
     foreign_links {
@@ -203,6 +203,13 @@ fn decode_value(reader: &mut dyn Read, value_type: &ValueType) {
                 println!("elem={}", elem);
             }
         }
+        ValueType::HashmapInZiplist => {
+            decode_length(reader);
+            let entries = decode_ziplist(reader);
+            for i in 0..entries.len() / 2 {
+                println!("field={}, value={}", entries[i*2], entries[i*2+1])
+            }
+        }
         _ => panic!("Its Value Type is not supported yet")
     }
 }
@@ -248,6 +255,95 @@ fn decide_encoding_type(b: u8) -> std::result::Result<EncodingType, &'static str
         2 => Ok(EncodingType::Stream),
         3 => Ok(EncodingType::Special),
         _ => Err("Invalid encoding")
+    }
+}
+
+fn decode_ziplist(buf: &mut dyn Read) -> Vec<String> {
+    let size = buf.read_u32::<LittleEndian>().unwrap();
+    let offset_to_tail = buf.read_u32::<LittleEndian>().unwrap();
+    let entry_len = buf.read_u16::<LittleEndian>().unwrap() as usize;
+    println!("ziplist header; size={}, offset_to_tail={}, # of entry={}", size, offset_to_tail, entry_len);
+    let mut entries = vec!["".to_string(); entry_len];
+    for i in 0..entry_len {
+        entries[i] = decode_ziplist_entry(buf);
+    }
+    let last_byte = buf.read_u8().unwrap();
+    assert!(last_byte == 0xFF);
+    entries
+}
+
+fn decode_ziplist_entry(buf: &mut dyn Read) -> String {
+    decode_prev_len(buf);
+    read_ziplist_entry_value(buf)
+}
+
+fn decode_prev_len(buf: &mut dyn Read) -> usize {
+    let first_byte = buf.read_u8().unwrap();
+    match first_byte {
+        0xFE => {
+            buf.read_u32::<BigEndian>().unwrap() as usize
+        }
+        0xFF => {
+            panic!("Invalid ziplist previous entry lenght")
+        }
+        _ => {
+            first_byte as usize
+        }
+    }
+}
+
+fn read_ziplist_entry_value(buf: &mut dyn Read) -> String {
+    decode_special_flag(buf)
+}
+
+fn decode_special_flag(buf: &mut dyn Read) -> String {
+    let first_byte = buf.read_u8().unwrap();
+    match first_byte >> 6 {
+        0 => {
+            let len = first_byte as usize;
+            let mut entry_buf = vec![0u8; len];
+            buf.read_exact(&mut entry_buf).unwrap();
+            String::from_utf8(entry_buf).unwrap()
+        }
+        1 => {
+            let upper = (first_byte & 0x3F) as usize;
+            let lower = buf.read_u8().unwrap() as usize;
+            let len = ((upper << 8) + lower) as usize;
+            let mut entry_buf = vec![0u8; len];
+            buf.read_exact(&mut entry_buf).unwrap();
+            String::from_utf8(entry_buf).unwrap()
+        }
+        2 => {
+            let len = buf.read_u32::<BigEndian>().unwrap() as usize;
+            let mut entry_buf = vec![0u8; len];
+            buf.read_exact(&mut entry_buf).unwrap();
+            String::from_utf8(entry_buf).unwrap()
+        }
+        _ => {
+            match first_byte {
+                0xC0 => {
+                    buf.read_i16::<BigEndian>().unwrap().to_string()
+                }
+                0xD0 => {
+                    buf.read_i32::<BigEndian>().unwrap().to_string()
+                }
+                0xE0 => {
+                    buf.read_i64::<BigEndian>().unwrap().to_string()
+                }
+                0xF0 => {
+                    buf.read_i24::<BigEndian>().unwrap().to_string()
+                }
+                0xFE => {
+                    buf.read_i8().unwrap().to_string()
+                }
+                0xFF => {
+                    panic!("Reached end of ziplist in the middle of entries")
+                }
+                _ => {
+                    (first_byte & 0x0F).to_string()
+                }
+            }
+        }
     }
 }
 
