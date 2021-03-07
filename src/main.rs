@@ -343,7 +343,7 @@ fn decode_special_flag(buf: &mut dyn Read) -> String {
                     panic!("Reached end of ziplist in the middle of entries")
                 }
                 _ => {
-                    (first_byte & 0x0F).to_string()
+                    ((first_byte & 0x0F) - 1).to_string()
                 }
             }
         }
