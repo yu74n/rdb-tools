@@ -3,6 +3,7 @@ extern crate error_chain;
 extern crate clap;
 
 use clap::{App, Arg, SubCommand};
+use core::panic;
 use std::{fs::File, usize};
 use std::io::{Read, BufReader};
 use byteorder::{LittleEndian,ReadBytesExt};
@@ -15,7 +16,25 @@ error_chain! {
 
 #[derive(Debug, PartialEq)]
 enum EncodingType {
-    Simple, AdditionalByte, Stream, Special
+    Simple,
+    AdditionalByte,
+    Stream,
+    Special
+}
+
+#[derive(Debug)]
+enum ValueType {
+    String,
+    List,
+    Set,
+    SortedSet,
+    Hash,
+    Zipmap,
+    Ziplist,
+    Intset,
+    SortedSetInZiplist,
+    HashmapInZiplist,
+    Quicklist
 }
 
 pub struct Parser<R: Read> {
@@ -69,12 +88,22 @@ impl<R: Read> Parser<R>{
                     let key = read_string(&mut self.input);
                     let value = read_string(&mut self.input);
                     println!("{}:{}", key, value);
-                },
+                }
+                0xFB => {
+                    let hash_table_size = decode_length(&mut self.input);
+                    let expiry_hash_table_size = decode_length(&mut self.input);
+                    println!("hash_table_size={}, expiry_table_size={}", hash_table_size, expiry_hash_table_size);
+                }
                 0xFE => {
                     parse_db(&mut self.input);
-                },
+                }
                 0xFF => break,
-                _ => print!("{:02x}", opcode)
+                _ => {
+                    let value_type = decode_value_type(opcode);
+                    let key = read_string(&mut self.input);
+                    println!("type={:?}, key={}", value_type, key);
+                    decode_value(&mut self.input, &value_type);
+                }
             };
         }
         
@@ -126,13 +155,13 @@ fn read_string(reader: &mut dyn Read) -> String {
             match len_type & 0x3F {
                 0 => {
                     reader.read_u8().unwrap().to_string()
-                },
+                }
                 1 => {
                     reader.read_u16::<LittleEndian>().unwrap().to_string()
-                },
+                }
                 2 => {
                     reader.read_u32::<LittleEndian>().unwrap().to_string()
-                },
+                }
                 3 => {
                     panic!("It's Compressed String, but not implemented yet")
                 }
@@ -145,6 +174,37 @@ fn read_string(reader: &mut dyn Read) -> String {
 fn parse_db(reader: &mut dyn Read) {
     let db_num = decode_length(reader);
     println!("db: {}", db_num);
+}
+
+fn decode_value_type(byte: u8) -> ValueType {
+    match byte {
+        0 => ValueType::String,
+        1 => ValueType::List,
+        2 => ValueType::Set,
+        3 => ValueType::SortedSet,
+        4 => ValueType::Hash,
+        9 => ValueType::Zipmap,
+        10 => ValueType::Ziplist,
+        11 => ValueType::Intset,
+        12 => ValueType::SortedSetInZiplist,
+        13 => ValueType::HashmapInZiplist,
+        14 => ValueType::Quicklist,
+        _ => panic!("Unknown ValueType")
+    }
+}
+
+fn decode_value(reader: &mut dyn Read, value_type: &ValueType) {
+    match value_type {
+        ValueType::List | ValueType::Set => {
+            let size = decode_length(reader);
+            println!("elem_len={}", size);
+            for _ in 0..size {
+                let elem = read_string(reader);
+                println!("elem={}", elem);
+            }
+        }
+        _ => panic!("Its Value Type is not supported yet")
+    }
 }
 
 fn decode_length(reader: &mut dyn Read) -> usize {
@@ -165,13 +225,13 @@ fn decode_length(reader: &mut dyn Read) -> usize {
             match len_type & 0x3F {
                 0 => {
                     reader.read_u8().unwrap().to_string().parse::<u8>().unwrap() as usize
-                },
+                }
                 1 => {
                     reader.read_u16::<LittleEndian>().unwrap().to_string().parse::<u16>().unwrap() as usize
-                },
+                }
                 2 => {
                     reader.read_u32::<LittleEndian>().unwrap().to_string().parse::<u32>().unwrap() as usize
-                },
+                }
                 3 => {
                     panic!("It's Compressed String, but not implemented yet")
                 }
