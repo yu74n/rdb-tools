@@ -195,6 +195,9 @@ fn decode_value_type(byte: u8) -> ValueType {
 
 fn decode_value(reader: &mut dyn Read, value_type: &ValueType) {
     match value_type {
+        ValueType::String => {
+            println!("{}", read_string(reader));
+        }
         ValueType::List | ValueType::Set => {
             let size = decode_length(reader);
             println!("elem_len={}", size);
