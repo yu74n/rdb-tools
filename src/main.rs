@@ -7,6 +7,7 @@ use core::panic;
 use std::{fs::File, usize};
 use std::io::{Read, BufReader};
 use byteorder::{LittleEndian,BigEndian,ReadBytesExt};
+use lzf;
 
 error_chain! {
     foreign_links {
@@ -29,6 +30,7 @@ enum ValueType {
     Set,
     SortedSet,
     Hash,
+    Skiplist,
     Zipmap,
     Ziplist,
     Intset,
@@ -163,7 +165,12 @@ fn read_string(reader: &mut dyn Read) -> String {
                     reader.read_u32::<LittleEndian>().unwrap().to_string()
                 }
                 3 => {
-                    panic!("It's Compressed String, but not implemented yet")
+                    let compressed_len = decode_length(reader);
+                    let uncompressed_len = decode_length(reader);
+                    let mut compressed = vec![0u8; compressed_len];
+                    reader.read_exact(&mut compressed).unwrap();
+                    let uncompressed = lzf::decompress(&compressed, uncompressed_len).unwrap();
+                    String::from_utf8(uncompressed).unwrap()
                 }
                 _ => panic!("Invalid encoding")
             }
@@ -183,13 +190,14 @@ fn decode_value_type(byte: u8) -> ValueType {
         2 => ValueType::Set,
         3 => ValueType::SortedSet,
         4 => ValueType::Hash,
+        5 => ValueType::Skiplist,
         9 => ValueType::Zipmap,
         10 => ValueType::Ziplist,
         11 => ValueType::Intset,
         12 => ValueType::SortedSetInZiplist,
         13 => ValueType::HashmapInZiplist,
         14 => ValueType::Quicklist,
-        _ => panic!("Unknown ValueType")
+        _ => panic!("Unknown ValueType: {:?}", byte)
     }
 }
 
@@ -200,12 +208,21 @@ fn decode_value(reader: &mut dyn Read, value_type: &ValueType) {
         }
         ValueType::List | ValueType::Set => {
             let size = decode_length(reader);
-            println!("elem_len={}", size);
+            println!("len={}", size);
             for _ in 0..size {
                 let elem = read_string(reader);
-                println!("elem={}", elem);
+                println!("{}", elem);
             }
         }
+        ValueType::Skiplist => {
+            let size = decode_length(reader);
+            for _ in 0..size {
+                let member = read_string(reader);
+                let score = reader.read_f64::<LittleEndian>().unwrap();
+                println!("member={}, score={}", member, score);
+            }
+        }
+        ValueType::SortedSetInZiplist |
         ValueType::HashmapInZiplist => {
             decode_length(reader);
             let entries = decode_ziplist(reader);
@@ -213,7 +230,7 @@ fn decode_value(reader: &mut dyn Read, value_type: &ValueType) {
                 println!("field={}, value={}", entries[i*2], entries[i*2+1])
             }
         }
-        _ => panic!("Its Value Type is not supported yet")
+        _ => panic!("{:?} is not supported yet", value_type)
     }
 }
 
