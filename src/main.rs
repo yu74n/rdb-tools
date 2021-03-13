@@ -214,6 +214,14 @@ fn decode_value(reader: &mut dyn Read, value_type: &ValueType) {
                 println!("{}", elem);
             }
         }
+        ValueType::Hash => {
+            let size = decode_length(reader);
+            for _ in 0..size {
+                let field = read_string(reader);
+                let value = read_string(reader);
+                println!("field={}, value={}", field, value);
+            }
+        }
         ValueType::Skiplist => {
             let size = decode_length(reader);
             for _ in 0..size {
