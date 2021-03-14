@@ -165,17 +165,21 @@ fn read_string(reader: &mut dyn Read) -> String {
                     reader.read_u32::<LittleEndian>().unwrap().to_string()
                 }
                 3 => {
-                    let compressed_len = decode_length(reader);
-                    let uncompressed_len = decode_length(reader);
-                    let mut compressed = vec![0u8; compressed_len];
-                    reader.read_exact(&mut compressed).unwrap();
-                    let uncompressed = lzf::decompress(&compressed, uncompressed_len).unwrap();
+                    let uncompressed = uncompress(reader);
                     String::from_utf8(uncompressed).unwrap()
                 }
                 _ => panic!("Invalid encoding")
             }
         }
     }
+}
+
+fn uncompress(reader: &mut dyn Read) -> Vec<u8> {
+    let compressed_len = decode_length(reader);
+    let uncompressed_len = decode_length(reader);
+    let mut compressed = vec![0u8; compressed_len];
+    reader.read_exact(&mut compressed).unwrap();
+    lzf::decompress(&compressed, uncompressed_len).unwrap()
 }
 
 fn parse_db(reader: &mut dyn Read) {
@@ -238,6 +242,16 @@ fn decode_value(reader: &mut dyn Read, value_type: &ValueType) {
                 println!("field={}, value={}", entries[i*2], entries[i*2+1])
             }
         }
+        ValueType::Quicklist => {
+            // TODO return bytes by prefix of length encoding even when applying LZF compression
+            decode_length(reader);
+            // Content of string encoding is Ziplist
+            decode_length(reader);
+            let entries = decode_ziplist(reader);
+            for entry in entries {
+                println!("{}", entry);
+            }
+        }
         _ => panic!("{:?} is not supported yet", value_type)
     }
 }
@@ -268,7 +282,8 @@ fn decode_length(reader: &mut dyn Read) -> usize {
                     reader.read_u32::<LittleEndian>().unwrap().to_string().parse::<u32>().unwrap() as usize
                 }
                 3 => {
-                    panic!("It's Compressed String, but not implemented yet")
+                    let uncompressed = uncompress(reader);
+                    String::from_utf8(uncompressed).unwrap().parse::<u32>().unwrap() as usize
                 }
                 _ => panic!("Invalid encoding")
             }
