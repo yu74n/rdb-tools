@@ -283,7 +283,7 @@ fn decode_length(reader: &mut dyn Read) -> usize {
                 }
                 3 => {
                     let uncompressed = uncompress(reader);
-                    String::from_utf8(uncompressed).unwrap().parse::<u32>().unwrap() as usize
+                        String::from_utf8(uncompressed).unwrap().parse::<u64>().unwrap() as usize
                 }
                 _ => panic!("Invalid encoding")
             }
@@ -434,5 +434,68 @@ fn main() {
             Ok(_) => println!("It's rdb file"),
             Err(err) => println!("error {}", err)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn test_read_string() {
+        // If the two most significant bits are 00, follows 6bits represents the length.
+        let data00: [u8; 5] = [4, b't', b'e', b's', b't'];
+        assert_eq!(read_string(&mut &data00[..]), "test");
+
+        // If the two most significant bits are 01, follows 14bits represents the length.
+        let data01: [u8; 6] = [0x40, 4, b'f', b'u', b'g', b'a'];
+        assert_eq!(read_string(&mut &data01[..]), "fuga");
+
+        // If the two most significant bits are 10, follows 4bytes represent the length.
+        let data10: [u8; 8] = [0x80, 3, 0, 0, 0, b'b', b'a', b'r'];
+        assert_eq!(read_string(&mut &data10[..]), "bar");
+
+        // 0xc0 means integer as string, it means 8 bit integer follows.
+        let data11: [u8; 2] = [0xc0, 0x5];
+        let mut c = Cursor::new(data11);
+        assert_eq!(read_string(&mut c), "5");
+
+        // lzf::compress uses the same size buffer for input and output, then 
+        // it will get NoCompressionPossible if the input size is very small.
+        let data_for_compression = "12345678901234567890";
+
+        let mut compressed = lzf::compress(data_for_compression.as_bytes()).unwrap();
+
+        // 0xc3 is string encoding type, 0xc3 means compressed String.
+        // compressed length 17(0x11)
+        // uncompressed length 20(0x14)
+        let mut compressed_string_data = vec![0xc3, 0x11, 0x14];
+        compressed_string_data.append(&mut compressed);
+
+        assert_eq!(read_string(&mut &*compressed_string_data), data_for_compression);
+    }
+
+    #[test]
+    fn test_decode_length() {
+        let data00: [u8; 1] = [63];
+        assert_eq!(decode_length(&mut &data00[..]), 63);
+
+        let data01: [u8; 2] = [0x40, 64];
+        assert_eq!(decode_length(&mut &data01[..]), 64);
+
+        let data10: [u8; 5] = [0x80, 0xff, 0xff, 0xff, 0xff];
+        assert_eq!(decode_length(&mut &data10[..]), u32::MAX as usize);
+
+        let data11: [u8; 5] = [0xc2, 0xff, 0xff, 0xff, 0xff];
+        assert_eq!(decode_length(&mut &data11[..]), u32::MAX as usize);
+
+        let data_for_compression = "1111111111111";
+        let mut compressed = lzf::compress(data_for_compression.as_bytes()).unwrap();
+        let mut compressed_string_data = vec![0xc3, 9, 13];
+        compressed_string_data.append(&mut compressed);
+
+        assert_eq!(decode_length(&mut &*compressed_string_data), 1111111111111);
     }
 }
