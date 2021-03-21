@@ -412,16 +412,16 @@ fn decode_special_flag(buf: &mut dyn Read) -> String {
         _ => {
             match first_byte {
                 0xC0 => {
-                    buf.read_i16::<BigEndian>().unwrap().to_string()
+                    buf.read_i16::<LittleEndian>().unwrap().to_string()
                 }
                 0xD0 => {
-                    buf.read_i32::<BigEndian>().unwrap().to_string()
+                    buf.read_i32::<LittleEndian>().unwrap().to_string()
                 }
                 0xE0 => {
-                    buf.read_i64::<BigEndian>().unwrap().to_string()
+                    buf.read_i64::<LittleEndian>().unwrap().to_string()
                 }
                 0xF0 => {
-                    buf.read_i24::<BigEndian>().unwrap().to_string()
+                    buf.read_i24::<LittleEndian>().unwrap().to_string()
                 }
                 0xFE => {
                     buf.read_i8().unwrap().to_string()
@@ -544,5 +544,21 @@ mod tests {
         compressed_string_data.append(&mut compressed);
 
         assert_eq!(decode_length(&mut &*compressed_string_data), 1111111111111);
+    }
+
+    /**
+     * Redis ziplist special flag spec
+     * https://github.com/redis/redis/blob/unstable/src/ziplist.c#L80-L106
+     */
+    #[test]
+    fn test_special_flag() {
+        let mut data1100 = Cursor::new([0xc0, 0, 1]);
+        assert_eq!(decode_special_flag(&mut data1100), "256");
+
+        let mut data11110000 = Cursor::new([0xf0, 0, 0, 1]);
+        assert_eq!(decode_special_flag(&mut data11110000), "65536");
+
+        let mut data11111011 = Cursor::new([0xfb]);
+        assert_eq!(decode_special_flag(&mut data11111011), "10");
     }
 }
