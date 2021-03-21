@@ -245,9 +245,8 @@ fn decode_value(reader: &mut dyn Read, value_type: &ValueType) {
         ValueType::Quicklist => {
             // TODO return bytes by prefix of length encoding even when applying LZF compression
             decode_length(reader);
-            // Content of string encoding is Ziplist
-            decode_length(reader);
-            let entries = decode_ziplist(reader);
+            let value = decode_as_byte(reader);
+            let entries = decode_ziplist(&mut &value[..]);
             for entry in entries {
                 println!("{}", entry);
             }
@@ -283,7 +282,55 @@ fn decode_length(reader: &mut dyn Read) -> usize {
                 }
                 3 => {
                     let uncompressed = uncompress(reader);
-                        String::from_utf8(uncompressed).unwrap().parse::<u64>().unwrap() as usize
+                    String::from_utf8(uncompressed).unwrap().parse::<u64>().unwrap() as usize
+                }
+                _ => panic!("Invalid encoding")
+            }
+        }
+    }
+}
+
+fn decode_as_byte(reader: &mut dyn Read) -> Vec<u8> {
+    let len_type = reader.read_u8().unwrap();
+    match decide_encoding_type(len_type).unwrap() {
+        EncodingType::Simple => {
+            let mut buf = vec![0u8; len_type as usize];
+            reader.read_exact(&mut buf).unwrap();
+            buf
+        }
+        EncodingType::AdditionalByte => {
+            let upper = (len_type & 0x3F) as usize;
+            let lower = reader.read_u8().unwrap() as usize;
+            let len = (upper << 8) + lower;
+            let mut buf = vec![0u8; len];
+            reader.read_exact(&mut buf).unwrap();
+            buf
+        }
+        EncodingType::Stream => {
+            let len = reader.read_u32::<LittleEndian>().unwrap() as usize;
+            let mut buf = vec![0u8; len];
+            reader.read_exact(&mut buf).unwrap();
+            buf
+        }
+        EncodingType::Special => {
+            match len_type & 0x3F {
+                0 => {
+                    let mut buf = vec![0u8];
+                    reader.read_exact(&mut buf).unwrap();
+                    buf
+                }
+                1 => {
+                    let mut buf = vec![0u8; 2];
+                    reader.read_exact(&mut buf).unwrap();
+                    buf
+                }
+                2 => {
+                    let mut buf = vec![0u8; 4];
+                    reader.read_exact(&mut buf).unwrap();
+                    buf
+                }
+                3 => {
+                    uncompress(reader)
                 }
                 _ => panic!("Invalid encoding")
             }
