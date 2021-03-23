@@ -5,7 +5,7 @@ extern crate clap;
 use clap::{App, Arg, SubCommand};
 use core::panic;
 use std::{fs::File, usize};
-use std::io::{Read, BufReader};
+use std::io::{Read, BufReader, Cursor};
 use std::str;
 use byteorder::{LittleEndian,BigEndian,ReadBytesExt};
 use lzf;
@@ -249,6 +249,11 @@ fn decode_value(reader: &mut dyn Read, value_type: &ValueType) {
                 println!("member={}, score={}", member, score);
             }
         }
+        ValueType::Intset => {
+            let mut encoded = Cursor::new(decode_as_byte(reader));
+            let values = decode_intset(&mut encoded);
+            println!("{:?}", values);
+        }
         ValueType::SortedSetInZiplist |
         ValueType::HashmapInZiplist => {
             decode_length(reader);
@@ -452,6 +457,22 @@ fn decode_special_flag(buf: &mut dyn Read) -> String {
     }
 }
 
+fn decode_intset(buf: &mut dyn Read) -> Vec<usize> {
+    let encoding = buf.read_u32::<LittleEndian>().unwrap() as usize;
+    let length = buf.read_u32::<LittleEndian>().unwrap() as usize;
+    let mut values = Vec::new();
+    for _ in 0..length {
+        let val = match encoding {
+            2 => buf.read_u16::<LittleEndian>().unwrap() as usize,
+            4 => buf.read_u32::<LittleEndian>().unwrap() as usize,
+            8 => buf.read_u64::<LittleEndian>().unwrap() as usize,
+            _ => panic!("Invalid Intset encoding type={}", encoding)
+        };
+        values.push(val);
+    }
+    values
+}
+
 fn main() {
     let matches = App::new("RDB dumpper")
         .version("0.1.0")
@@ -503,7 +524,6 @@ fn main() {
 mod tests {
 
     use super::*;
-    use std::io::Cursor;
 
     #[test]
     fn test_read_string() {
@@ -578,8 +598,15 @@ mod tests {
     }
 
     #[test]
-    fn test1() {
+    fn test_byte2string() {
         let data: Vec<u8> = vec![0x15, 0x8, 0xbc, 0xad];
         assert_eq!(bytes2string(data), "1508BCAD")
+    }
+
+    #[test]
+    fn test_decode_intset() {
+        let mut data = Cursor::new([4, 0, 0, 0, 3, 0, 0, 0,
+            0xfc, 0xff, 0, 0, 0xfd, 0xff, 0, 0, 0xfe, 0xff, 0, 0]);
+        assert_eq!(decode_intset(&mut data), vec![65532, 65533, 65534]);
     }
 }
