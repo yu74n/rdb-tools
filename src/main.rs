@@ -99,19 +99,11 @@ impl<R: Read> Parser<R>{
                 }
                 0xFC => {
                     let expiry_time_ms = self.input.read_u64::<LittleEndian>().unwrap();
-                    let encoded_value_type = self.input.read_u8().unwrap();
-                    let value_type = decode_value_type(encoded_value_type);
-                    let key = read_string(&mut self.input);
-                    println!("type={:?}, key={}, expiry_time_ms={}", value_type, key, expiry_time_ms);
-                    decode_value(&mut self.input, &value_type);
+                    println!("expiry_time_ms={}", expiry_time_ms);
                 }
                 0xFD => {
                     let expiry_time_sec = self.input.read_u32::<LittleEndian>().unwrap();
-                    let encoded_value_type = self.input.read_u8().unwrap();
-                    let value_type = decode_value_type(encoded_value_type);
-                    let key = read_string(&mut self.input);
-                    println!("type={:?}, key={}, expiry_time_sec={}", value_type, key, expiry_time_sec);
-                    decode_value(&mut self.input, &value_type);
+                    println!("expiry_time_sec={}", expiry_time_sec);
                 }
                 0xFE => {
                     parse_db(&mut self.input);
