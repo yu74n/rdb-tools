@@ -6,6 +6,7 @@ use clap::{App, Arg, SubCommand};
 use core::panic;
 use std::{fs::File, usize};
 use std::io::{Read, BufReader};
+use std::str;
 use byteorder::{LittleEndian,BigEndian,ReadBytesExt};
 use lzf;
 
@@ -108,7 +109,6 @@ impl<R: Read> Parser<R>{
                 }
             };
         }
-        
         Ok(())
     }
 }
@@ -137,7 +137,7 @@ fn read_string(reader: &mut dyn Read) -> String {
         EncodingType::Simple => {
             let mut buf = vec![0u8; len_type as usize];
             reader.read_exact(&mut buf).unwrap();
-            String::from_utf8(buf).unwrap()
+            bytes2string(buf)
         },
         EncodingType::AdditionalByte => {
             let upper = (len_type & 0x3F) as usize;
@@ -145,13 +145,13 @@ fn read_string(reader: &mut dyn Read) -> String {
             let len = (upper << 8) + lower;
             let mut buf = vec![0u8; len];
             reader.read_exact(&mut buf).unwrap();
-            String::from_utf8(buf).unwrap()
+            bytes2string(buf)
         },
         EncodingType::Stream => {
             let len = reader.read_u32::<LittleEndian>().unwrap() as usize;
             let mut buf = vec![0u8; len];
             reader.read_exact(&mut buf).unwrap();
-            String::from_utf8(buf).unwrap()
+            bytes2string(buf)
         },
         EncodingType::Special => {
             match len_type & 0x3F {
@@ -166,11 +166,18 @@ fn read_string(reader: &mut dyn Read) -> String {
                 }
                 3 => {
                     let uncompressed = uncompress(reader);
-                    String::from_utf8(uncompressed).unwrap()
+                    bytes2string(uncompressed)
                 }
                 _ => panic!("Invalid encoding")
             }
         }
+    }
+}
+
+fn bytes2string(buf: Vec<u8>) -> String {
+    match str::from_utf8(&buf) {
+        Ok(value) => value.to_string(),
+        Err(..) => buf.iter().map(|n| format!("{:02X}", n)).collect::<String>()
     }
 }
 
@@ -560,5 +567,11 @@ mod tests {
 
         let mut data11111011 = Cursor::new([0xfb]);
         assert_eq!(decode_special_flag(&mut data11111011), "10");
+    }
+
+    #[test]
+    fn test1() {
+        let data: Vec<u8> = vec![0x15, 0x8, 0xbc, 0xad];
+        assert_eq!(bytes2string(data), "1508BCAD")
     }
 }
