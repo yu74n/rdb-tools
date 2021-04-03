@@ -258,8 +258,8 @@ fn decode_value(reader: &mut dyn Read, value_type: &ValueType) {
         }
         ValueType::SortedSetInZiplist |
         ValueType::HashmapInZiplist => {
-            decode_length(reader);
-            let entries = decode_ziplist(reader);
+            let bytes = decode_as_byte(reader);
+            let entries = decode_ziplist(&mut &bytes[..]);
             for i in 0..entries.len() / 2 {
                 println!("field={}, value={}", entries[i*2], entries[i*2+1])
             }
