@@ -84,6 +84,7 @@ impl<R: Read> Parser<R>{
     pub fn parse(&mut self) -> std::result::Result<(), std::io::Error> {
         verify_magic(&mut self.input).unwrap();
         verify_version(&mut self.input);
+        let mut key_count = 0;
         loop {
             let opcode = self.input.read_u8()?;
             match opcode {
@@ -110,9 +111,10 @@ impl<R: Read> Parser<R>{
                 }
                 0xFF => break,
                 _ => {
+                    key_count += 1;
                     let value_type = decode_value_type(opcode);
                     let key = read_string(&mut self.input);
-                    println!("type={:?}, key={}", value_type, key);
+                    println!("{} type={:?}, key={}", key_count, value_type, key);
                     decode_value(&mut self.input, &value_type);
                 }
             };
