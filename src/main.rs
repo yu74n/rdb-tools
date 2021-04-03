@@ -41,7 +41,8 @@ enum ValueType {
 }
 
 pub struct Parser<R: Read> {
-    input: R
+    input: R,
+    number: u64
 }
 
 fn dump(file: &str) -> std::io::Result<()> {
@@ -75,9 +76,10 @@ fn dump_buf(buf: &Vec<u8>) {
 }
 
 impl<R: Read> Parser<R>{
-    pub fn new(input: R) -> Parser<R> {
+    pub fn new(input: R, number: u64) -> Parser<R> {
         Parser{
-            input: input
+            input: input,
+            number: number
         }
     }
 
@@ -86,6 +88,9 @@ impl<R: Read> Parser<R>{
         verify_version(&mut self.input);
         let mut key_count = 0;
         loop {
+            if self.number <= key_count {
+                break;
+            }
             let opcode = self.input.read_u8()?;
             match opcode {
                 0xFA => {
@@ -497,7 +502,15 @@ fn main() {
                     Arg::with_name("file")
                         .short("f")
                         .takes_value(true)
-                        .help("Specify a target file"),
+                        .required(false)
+                        .help("Specify a target file, ~/dump.rdb is parsed if not specified"),
+                )
+                .arg(
+                    Arg::with_name("number")
+                            .short("n")
+                            .takes_value(true)
+                            .required(false)
+                            .help("How many keys are read")
                 ),
         )
         .get_matches();
@@ -512,9 +525,10 @@ fn main() {
 
     if let Some(matches) = matches.subcommand_matches("parse") {
         let file = matches.value_of("file").unwrap_or("dump.rdb");
+        let number = matches.value_of("number").unwrap();
         let f = File::open(file).unwrap();
         let reader = BufReader::new(f);
-        let mut parser = Parser::new(reader);
+        let mut parser = Parser::new(reader, number.parse::<u64>().unwrap());
         match parser.parse() {
             Ok(_) => println!("It's rdb file"),
             Err(err) => println!("error {}", err)
