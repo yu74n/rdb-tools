@@ -88,7 +88,7 @@ impl<R: Read> Parser<R>{
         verify_version(&mut self.input);
         let mut key_count = 0;
         loop {
-            if self.number <= key_count {
+            if self.number != 0 && self.number <= key_count {
                 break;
             }
             let opcode = self.input.read_u8()?;
@@ -525,7 +525,7 @@ fn main() {
 
     if let Some(matches) = matches.subcommand_matches("parse") {
         let file = matches.value_of("file").unwrap_or("dump.rdb");
-        let number = matches.value_of("number").unwrap();
+        let number = matches.value_of("number").unwrap_or("0");
         let f = File::open(file).unwrap();
         let reader = BufReader::new(f);
         let mut parser = Parser::new(reader, number.parse::<u64>().unwrap());
