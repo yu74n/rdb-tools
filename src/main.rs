@@ -45,12 +45,15 @@ pub struct Parser<R: Read> {
     number: u64
 }
 
-fn dump(file: &str) -> std::io::Result<()> {
+fn dump(file: &str, number: u64) -> std::io::Result<()> {
     let f = File::open(file)?;
     let mut count = 0;
     for byte in f.bytes() {
         print!("{:02x}", byte.unwrap());
         count += 1;
+        if number > 0 && count / 16 == number {
+            break
+        }
         if count % 16 == 0 {
             print!("\n");
         } else {
@@ -493,6 +496,12 @@ fn main() {
                         .short("f")
                         .takes_value(true)
                         .help("Specify a target file"),
+                ).arg(
+                    Arg::with_name("number")
+                        .short("n")
+                        .takes_value(true)
+                        .required(false)
+                        .help("How many rows are printed"),
                 ),
         )
         .subcommand(
@@ -517,7 +526,8 @@ fn main() {
 
     if let Some(matches) = matches.subcommand_matches("dump") {
         let file = matches.value_of("file").unwrap_or("dump.rdb");
-        match dump(file) {
+        let number = matches.value_of("number").unwrap_or("0");
+        match dump(file, number.parse::<u64>().unwrap()) {
             Ok(_) => (),
             Err(err) => println!("error {}", err),
         };
