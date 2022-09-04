@@ -37,7 +37,8 @@ enum ValueType {
     Intset,
     SortedSetInZiplist,
     HashmapInZiplist,
-    Quicklist
+    Quicklist,
+    HashmapInListpack
 }
 
 pub struct Parser<R: Read> {
@@ -45,7 +46,7 @@ pub struct Parser<R: Read> {
     number: u64
 }
 
-fn dump(file: &str, number: u64) -> std::io::Result<()> {
+fn dump_file(file: &str, number: u64) -> std::io::Result<()> {
     let f = File::open(file)?;
     let mut count = 0;
     for byte in f.bytes() {
@@ -64,9 +65,9 @@ fn dump(file: &str, number: u64) -> std::io::Result<()> {
     Ok(())
 }
 
-fn dump_buf(buf: &Vec<u8>) {
+fn dump_buf(it: &Vec<u8>) {
     let mut count = 0;
-    for byte in buf {
+    for byte in it {
         print!("{:02x}", byte);
         count += 1;
         if count % 16 == 0 {
@@ -226,6 +227,7 @@ fn decode_value_type(byte: u8) -> ValueType {
         12 => ValueType::SortedSetInZiplist,
         13 => ValueType::HashmapInZiplist,
         14 => ValueType::Quicklist,
+        16 => ValueType::HashmapInListpack,
         _ => panic!("Unknown ValueType: {:?}", byte)
     }
 }
@@ -280,6 +282,10 @@ fn decode_value(reader: &mut dyn Read, value_type: &ValueType) {
             for entry in entries {
                 println!("{}", entry);
             }
+        }
+        ValueType::HashmapInListpack => {
+            let value: Vec<u8> = decode_as_byte(reader);
+            decode_listpack(&mut &value[..]);
         }
         _ => panic!("{:?} is not supported yet", value_type)
     }
@@ -483,6 +489,130 @@ fn decode_intset(buf: &mut dyn Read) -> Vec<usize> {
     values
 }
 
+fn decode_listpack(reader: &mut dyn Read) -> () {
+    let total_bytes = reader.read_u32::<LittleEndian>().unwrap() as usize;
+    let number_of_element: usize = reader.read_u16::<LittleEndian>().unwrap() as usize;
+    let mut count: usize = 0;
+    loop {
+        let first_byte = reader.read_u8().unwrap();
+        if first_byte == 0xFF || count >= number_of_element {
+            break;
+        }
+        match first_byte >> 7 {
+            0 => {
+                let payload = first_byte & 0x7F;
+                println!("{}", payload.to_string());
+                skip_element_total_length_field(reader, 1);
+            }
+            _ => {
+                match first_byte >> 6 {
+                    // 10|xxxxxx
+                    0b10 => {
+                        let len = (first_byte & 0x3F) as usize;
+                        let mut buf = vec![0u8; len];
+                        reader.read_exact(&mut buf).unwrap();
+                        let debug_info = buf.clone();
+                        match String::from_utf8(buf) {
+                            Ok(str) => println!("{}", str),
+                            Err(_e) => {
+                                let raw = debug_info.iter().map(|c| format!("{:02x}", c)).collect::<Vec<String>>().join(" ");
+                                println!("{}", raw);
+                            }
+                        }
+                        skip_element_total_length_field(reader, len + 1); // string len + first_byte
+                    }
+                    _ => {
+                        match first_byte >> 5 {
+                            // 110|xxxxx yyyyyyyy
+                            0b110 => {
+                                let upper = (first_byte & 0x1F) as usize;
+                                let lower = reader.read_u8().unwrap() as usize;
+                                let payload = (upper << 8) + lower;
+                                println!("{}", payload);
+                                skip_element_total_length_field(reader, 2 + 1); // 13 bits signed integer + first_byte
+                            }
+                            _ => {
+                                match first_byte >> 4 {
+                                    // 1110|xxxx yyyyyyyy
+                                    0b1110 => {
+                                        let upper = (first_byte & 0xF) as usize;
+                                        let lower = reader.read_u8().unwrap() as usize;
+                                        let str_len = (upper << 8) + lower;
+                                        let mut buf = vec![0u8; str_len];
+                                        reader.read_exact(&mut buf).unwrap();
+                                        println!("{}", String::from_utf8(buf).unwrap());
+                                        skip_element_total_length_field(reader, str_len + 2); // string length + upper & lower bytes
+                                    }
+                                    0b1111 => {
+                                        match first_byte & 0x0F {
+                                            0 => {
+                                                let str_len = reader.read_u32::<LittleEndian>().unwrap() as usize;
+                                                let mut buf = vec![0u8; str_len];
+                                                reader.read_exact(&mut buf).unwrap();
+                                                println!("{}", String::from_utf8(buf).unwrap());
+                                                skip_element_total_length_field(reader, str_len + 4 + 1); // string length + str_len field + first byte
+                                            }
+                                            1 => {
+                                                let value = reader.read_i16::<LittleEndian>().unwrap();
+                                                println!("{}", value);
+                                                skip_element_total_length_field(reader, 2 + 1); // 16 bit + first byte
+                                            }
+                                            2 => {
+                                                let value = reader.read_i24::<LittleEndian>().unwrap();
+                                                println!("{}", value);
+                                                skip_element_total_length_field(reader, 3 + 1); // 24 bit + first byte
+                                            }
+                                            3 => {
+                                                let value = reader.read_i32::<LittleEndian>().unwrap();
+                                                println!("{}", value);
+                                                skip_element_total_length_field(reader, 4 + 1); // 32 bit + first byte
+                                            }
+                                            4 => {
+                                                let value = reader.read_i64::<LittleEndian>().unwrap();
+                                                println!("{}", value);
+                                                skip_element_total_length_field(reader, 5 + 1); // 64 bit + first byte
+                                            }
+                                            _ => {
+                                                panic!("This listpack encoding {} doesn't support yet", first_byte);
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        panic!("This listpack encoding {} doesn't support yet", first_byte);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        count += 1;
+    }
+}
+
+fn skip_element_total_length_field(reader: &mut dyn Read, len: usize) {
+    let total_length_field_len = calc_total_length_field_len(len);
+    let mut buf = vec![0u8; total_length_field_len];
+    reader.read_exact(&mut buf).unwrap();
+}
+
+fn calc_total_length_field_len(len: usize) -> usize {
+    if len < 128 {
+        return 1;
+    } else if len < 16383 {
+        return 2;
+    } else if len < 2097151 {
+        return 3;
+    } else if len < 268435455 {
+        return 4;
+    } else if len < 34359738367 {
+        return 5;
+    } else {
+        panic!("listpack doesn't support value longer than 34359738367 {} ", len);
+    }
+}
+
 fn main() {
     let matches = App::new("RDB dumpper")
         .version("0.1.0")
@@ -527,7 +657,7 @@ fn main() {
     if let Some(matches) = matches.subcommand_matches("dump") {
         let file = matches.value_of("file").unwrap_or("dump.rdb");
         let number = matches.value_of("number").unwrap_or("0");
-        match dump(file, number.parse::<u64>().unwrap()) {
+        match dump_file(file, number.parse::<u64>().unwrap()) {
             Ok(_) => (),
             Err(err) => println!("error {}", err),
         };
